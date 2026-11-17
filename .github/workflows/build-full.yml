@@ -135,7 +135,7 @@ jobs:
           cd $BUILD_ROOT/openwrt
           curl -sL https://raw.githubusercontent.com/ztb666ai/Actions-OpenWrt-AN758X/master/diy-part2.sh -o diy-part2.sh
           chmod +x diy-part2.sh
-          FW_AUTHOR=$FW_AUTHOR TZ=$TZ FW_BUILD_TIME="${FW_BUILD_TIME:-$(TZ=$TZ date '+%Y-%m-%d %H:%M')}" FW_DESC_SUFFIX="${FW_DESC_SUFFIX:-· ${FW_AUTHOR} · $(TZ=$TZ date '+%Y-%m-%d %H:%M')}" ./diy-part2.sh
+          FW_AUTHOR=$FW_AUTHOR TZ=$TZ FW_BUILD_TIME="${FW_BUILD_TIME:-$(TZ=$TZ date '+%Y-%m-%d %H:%M')}" FW_DESC_SUFFIX="${FW_DESC_SUFFIX:-· ${FW_AUTHOR} · $(TZ=$TZ date '+%Y-%m-%d %H:%M')}" LAN_HOSTNAME=ponwrt ./diy-part2.sh
 
       - name: Inject OpenClash
         run: |
@@ -173,7 +173,7 @@ jobs:
           grep -E "CONFIG_TARGET_MULTI_PROFILE=y" .config || { echo "❌ MULTI_PROFILE not set"; exit 1; }
           echo "✅ Device profile verified: ${PROFILE}"
 
-      - name: Set default hostname to ponwrt (via uci-defaults + base-files patch)
+      - name: Set default hostname to ponwrt (via uci-defaults + base-files patch + config)
         run: |
           cd $BUILD_ROOT/openwrt
           # Method 1: Patch base-files Makefile DEFAULT_HOSTNAME variable (takes precedence at build time)
@@ -187,7 +187,12 @@ jobs:
           # Also try CONFIG_DEFAULT_HOSTNAME pattern
           sed -i 's/CONFIG_DEFAULT_HOSTNAME=.*/CONFIG_DEFAULT_HOSTNAME="ponwrt"/' package/base-files/Makefile 2>/dev/null || true
           
-          # Method 2: uci-defaults script (most reliable - runs at first boot)
+          # Method 2: Set in .config directly (highest priority after defconfig)
+          sed -i '/^CONFIG_DEFAULT_HOSTNAME=/d; /^# CONFIG_DEFAULT_HOSTNAME is not set/d' .config
+          echo 'CONFIG_DEFAULT_HOSTNAME="ponwrt"' >> .config
+          echo "✅ Set CONFIG_DEFAULT_HOSTNAME in .config"
+          
+          # Method 3: uci-defaults script (most reliable - runs at first boot)
           mkdir -p package/base-files/files/etc/uci-defaults
           cat > package/base-files/files/etc/uci-defaults/99-hostname <<'EOF'
           #!/bin/sh
@@ -216,6 +221,55 @@ jobs:
           EOF
           chmod +x package/base-files/files/etc/uci-defaults/99-ntp-servers
           echo "=== NTP servers configured via uci-defaults ==="
+
+      - name: Fix iStore menu entries (ensure they appear in Services menu)
+        run: |
+          cd $BUILD_ROOT/openwrt
+          echo "=== Fixing iStore package menu entries ==="
+          # luci-app-store: Ensure LUCI_MENU:=Services
+          if [ -f "package/custom/luci-app-store/Makefile" ]; then
+            echo " 🔧 Fixing luci-app-store menu entry..."
+            # Add LUCI_MENU if missing
+            if ! grep -q "LUCI_MENU" package/custom/luci-app-store/Makefile; then
+              sed -i '/LUCI_DEPENDS:=.*/a LUCI_MENU:=Services' package/custom/luci-app-store/Makefile
+            else
+              sed -i 's/LUCI_MENU:=.*/LUCI_MENU:=Services/' package/custom/luci-app-store/Makefile
+            fi
+            # Ensure LUCI_TITLE is set
+            if ! grep -q "LUCI_TITLE" package/custom/luci-app-store/Makefile; then
+              sed -i '/LUCI_DEPENDS:=.*/a LUCI_TITLE:=iStore App Store' package/custom/luci-app-store/Makefile
+            fi
+            echo "✅ luci-app-store menu fixed"
+            grep -E "(LUCI_TITLE|LUCI_DEPENDS|LUCI_MENU)" package/custom/luci-app-store/Makefile
+          fi
+          # luci-app-quickstart: Ensure LUCI_MENU:=Services
+          if [ -f "package/custom/luci-app-quickstart/Makefile" ]; then
+            echo " 🔧 Fixing luci-app-quickstart menu entry..."
+            if ! grep -q "LUCI_MENU" package/custom/luci-app-quickstart/Makefile; then
+              sed -i '/LUCI_DEPENDS:=.*/a LUCI_MENU:=Services' package/custom/luci-app-quickstart/Makefile
+            else
+              sed -i 's/LUCI_MENU:=.*/LUCI_MENU:=Services/' package/custom/luci-app-quickstart/Makefile
+            fi
+            if ! grep -q "LUCI_TITLE" package/custom/luci-app-quickstart/Makefile; then
+              sed -i '/LUCI_DEPENDS:=.*/a LUCI_TITLE:=iStore QuickStart' package/custom/luci-app-quickstart/Makefile
+            fi
+            echo "✅ luci-app-quickstart menu fixed"
+            grep -E "(LUCI_TITLE|LUCI_DEPENDS|LUCI_MENU)" package/custom/luci-app-quickstart/Makefile
+          fi
+          # luci-app-istorex: Ensure LUCI_MENU:=Services
+          if [ -f "package/custom/luci-app-istorex/Makefile" ]; then
+            echo " 🔧 Fixing luci-app-istorex menu entry..."
+            if ! grep -q "LUCI_MENU" package/custom/luci-app-istorex/Makefile; then
+              sed -i '/LUCI_DEPENDS:=.*/a LUCI_MENU:=Services' package/custom/luci-app-istorex/Makefile
+            else
+              sed -i 's/LUCI_MENU:=.*/LUCI_MENU:=Services/' package/custom/luci-app-istorex/Makefile
+            fi
+            if ! grep -q "LUCI_TITLE" package/custom/luci-app-istorex/Makefile; then
+              sed -i '/LUCI_DEPENDS:=.*/a LUCI_TITLE:=iStoreX Dashboard' package/custom/luci-app-istorex/Makefile
+            fi
+            echo "✅ luci-app-istorex menu fixed"
+            grep -E "(LUCI_TITLE|LUCI_DEPENDS|LUCI_MENU)" package/custom/luci-app-istorex/Makefile
+          fi
 
       - name: Expand config (make defconfig) to resolve dependencies
         run: |
@@ -320,9 +374,10 @@ jobs:
           find bin/targets -type f \( -name "*.itb" -o -name "*.ubi" -o -name "*.img" \) | xargs -I{} ls -la {}
           echo ""
           echo "=== Checking for nokia_xg-040g-md-ubi profile ==="
-          if find bin/targets -type f -name "*nokia_xg-040g-md-ubi*" | grep -q .; then
+          # Try multiple naming patterns
+          if find bin/targets -type f \( -name "*nokia_xg-040g-md-ubi*" -o -name "*an7581*nokia_xg-040g-md*" -o -name "*nokia*xg*040g*md*" \) | grep -q .; then
             echo "✅ nokia_xg-040g-md-ubi firmware found"
-            find bin/targets -type f -name "*nokia_xg-040g-md-ubi*" | xargs -I{} ls -la {}
+            find bin/targets -type f \( -name "*nokia_xg-040g-md-ubi*" -o -name "*an7581*nokia_xg-040g-md*" -o -name "*nokia*xg*040g*md*" \) | xargs -I{} ls -la {}
           else
             echo "❌ nokia_xg-040g-md-ubi firmware NOT found!"
             echo "Build log tail:"
@@ -333,7 +388,7 @@ jobs:
       - name: Verify FIT image contains rootfs
         run: |
           cd $BUILD_ROOT/openwrt
-          for f in bin/targets/**/*nokia_xg-040g-md-ubi*.itb; do
+          for f in bin/targets/**/*nokia_xg-040g-md-ubi*.itb bin/targets/**/*an7581*nokia_xg-040g-md*.itb; do
             if [ -f "$f" ]; then
               echo "=== Checking $f ==="
               dumpimage -l "$f" 2>/dev/null || echo "dumpimage not available"
@@ -345,7 +400,8 @@ jobs:
         run: |
           cd $BUILD_ROOT/openwrt
           mkdir -p $BUILD_ROOT/artifacts
-          find bin/targets -type f \( -name "*nokia_xg-040g-md-ubi*.itb" -o -name "*nokia_xg-040g-md-ubi*.ubi" -o -name "*nokia_xg-040g-md-ubi*.img" \) | xargs -I{} cp {} $BUILD_ROOT/artifacts/
+          # Use broader patterns to catch all possible naming variations
+          find bin/targets -type f \( -name "*nokia_xg-040g-md-ubi*.itb" -o -name "*nokia_xg-040g-md-ubi*.ubi" -o -name "*nokia_xg-040g-md-ubi*.img" -o -name "*an7581*nokia_xg-040g-md*.itb" -o -name "*an7581*nokia_xg-040g-md*.ubi" -o -name "*an7581*nokia_xg-040g-md*.img" \) | xargs -I{} cp {} $BUILD_ROOT/artifacts/
           find bin/targets -type f -name "*squashfs-sysupgrade.itb" | xargs -I{} cp {} $BUILD_ROOT/artifacts/ 2>/dev/null || true
           echo "=== Collected artifacts ==="
           ls -la $BUILD_ROOT/artifacts/
